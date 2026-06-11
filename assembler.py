@@ -165,13 +165,17 @@ def mux_audio(video_path: str, audio_path: str, output_path: str) -> str:
         "ffmpeg", "-y",
         "-i", video_path,
         "-i", audio_path,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
         "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:a", "aac",
+        "-ar", "44100",
+        "-ac", "2",
+        "-b:a", "192k",
         "-shortest",
         output_path,
     ], "mux_audio")
     return output_path
-
 
 # ── Main assembler ─────────────────────────────────────────────────────────
 
@@ -249,8 +253,25 @@ def assemble_video(
     concat_silent_clips(processed_clips, body_path)
 
     # ── Mux body with voiceover ───────────────────────────────────────────
-    body_audio_path = os.path.join(workdir, "body_audio.mp4")
-    mux_audio(body_path, audio_path, body_audio_path)
+    # ── Debug durations ───────────────────────────────────────────────────
+log.info(f"Body duration: {get_duration(body_path):.1f}s")
+log.info(f"Audio duration: {audio_duration:.1f}s")
+
+# ── Normalize voiceover audio ─────────────────────────────────────────
+voice_fixed = os.path.join(workdir, "voice_fixed.wav")
+
+_run([
+    "ffmpeg", "-y",
+    "-i", audio_path,
+    "-ar", "44100",
+    "-ac", "2",
+    "-c:a", "pcm_s16le",
+    voice_fixed,
+], "normalize_audio")
+
+# ── Mux body with normalized voiceover ────────────────────────────────
+body_audio_path = os.path.join(workdir, "body_audio.mp4")
+mux_audio(body_path, voice_fixed, body_audio_path)
 
     # ── Final concatenation: intro + body(+audio) + outro ────────────────
     # Intro and outro need silent audio tracks so they concat cleanly
@@ -260,7 +281,7 @@ def assemble_video(
     for src, dst in [(intro_path, intro_silent), (outro_path, outro_silent)]:
         _run([
             "ffmpeg", "-y", "-i", src,
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=4",,
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-shortest", dst,
         ], "add_silent_audio")
@@ -271,13 +292,20 @@ def assemble_video(
             f.write(f"file '{p}'\n")
 
     _run([
-        "ffmpeg", "-y",
-        "-f", "concat", "-safe", "0", "-i", final_list,
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",    # Optimise for web streaming
-        output_path,
-    ], "final_render")
+    "ffmpeg", "-y",
+    "-f", "concat",
+    "-safe", "0",
+    "-i", final_list,
+    "-c:v", "libx264",
+    "-preset", "medium",
+    "-crf", "18",
+    "-c:a", "aac",
+    "-ar", "44100",
+    "-ac", "2",
+    "-b:a", "192k",
+    "-movflags", "+faststart",
+    output_path,
+], "final_render")
 
     log.info(f"Video assembled → {output_path}")
     return output_path
