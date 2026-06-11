@@ -281,7 +281,7 @@ def assemble_video(
     for src, dst in [(intro_path, intro_silent), (outro_path, outro_silent)]:
         _run([
             "ffmpeg", "-y", "-i", src,
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=4",,
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=4",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-shortest", dst,
         ], "add_silent_audio")
