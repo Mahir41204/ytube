@@ -1,0 +1,300 @@
+{
+  "name": "Tech Review Video Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-daily",
+      "name": "Daily 9am (Mon-Fri)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "schedule-weekly",
+      "name": "Monday 8am (Weekly Batch)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 480]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-review",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-manual",
+      "name": "Manual Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 660],
+      "webhookId": "tech-review-trigger"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-source",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "weekly",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-daily-vs-weekly",
+      "name": "Daily or Weekly?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [560, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Attach metadata for routing\nreturn [{ json: { source: 'daily', n: 2, timestamp: new Date().toISOString() } }];"
+      },
+      "id": "set-daily-meta",
+      "name": "Set Daily Meta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Weekly batch: produce 5 videos\nreturn [{ json: { source: 'weekly', n: 5, timestamp: new Date().toISOString() } }];"
+      },
+      "id": "set-weekly-meta",
+      "name": "Set Weekly Meta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 480]
+    },
+    {
+      "parameters": {
+        "url": "=http://YOUR_SERVER_IP:8080/run/discover",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Pipeline-Secret",
+              "value": "={{ $env.PIPELINE_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "n",
+              "value": "=2"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "call-daily-pipeline",
+      "name": "Run Daily Pipeline (2 videos)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 320]
+    },
+    {
+      "parameters": {
+        "url": "=http://YOUR_SERVER_IP:8080/run/discover",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Pipeline-Secret",
+              "value": "={{ $env.PIPELINE_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "n",
+              "value": "=5"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "call-weekly-pipeline",
+      "name": "Run Weekly Pipeline (5 videos)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 480]
+    },
+    {
+      "parameters": {
+        "url": "=http://YOUR_SERVER_IP:8080/run/tool",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Pipeline-Secret",
+              "value": "={{ $env.PIPELINE_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "={{ $json.body.tool }}"
+            },
+            {
+              "name": "category",
+              "value": "={{ $json.body.category ?? 'Tech' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "call-tool-pipeline",
+      "name": "Run Single Tool Review",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 660]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'triggered', tool: $json.body.tool }) }}"
+      },
+      "id": "webhook-response",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [780, 660]
+    },
+    {
+      "parameters": {
+        "url": "=http://YOUR_SERVER_IP:8080/health",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "health-check",
+      "name": "Check Pipeline Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-health-ok",
+      "name": "Pipeline Healthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, 400]
+    }
+  ],
+  "connections": {
+    "Daily 9am (Mon-Fri)": {
+      "main": [[{ "node": "Set Daily Meta", "type": "main", "index": 0 }]]
+    },
+    "Monday 8am (Weekly Batch)": {
+      "main": [[{ "node": "Set Weekly Meta", "type": "main", "index": 0 }]]
+    },
+    "Manual Webhook Trigger": {
+      "main": [[{ "node": "Run Single Tool Review", "type": "main", "index": 0 }]]
+    },
+    "Set Daily Meta": {
+      "main": [[{ "node": "Daily or Weekly?", "type": "main", "index": 0 }]]
+    },
+    "Set Weekly Meta": {
+      "main": [[{ "node": "Daily or Weekly?", "type": "main", "index": 0 }]]
+    },
+    "Daily or Weekly?": {
+      "main": [
+        [{ "node": "Run Weekly Pipeline (5 videos)", "type": "main", "index": 0 }],
+        [{ "node": "Run Daily Pipeline (2 videos)",  "type": "main", "index": 0 }]
+      ]
+    },
+    "Run Daily Pipeline (2 videos)":  { "main": [[{ "node": "Check Pipeline Health", "type": "main", "index": 0 }]] },
+    "Run Weekly Pipeline (5 videos)": { "main": [[{ "node": "Check Pipeline Health", "type": "main", "index": 0 }]] },
+    "Run Single Tool Review": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 3,
+  "tags": [
+    { "createdAt": "2026-06-09T00:00:00.000Z", "updatedAt": "2026-06-09T00:00:00.000Z", "id": "1", "name": "automation" },
+    { "createdAt": "2026-06-09T00:00:00.000Z", "updatedAt": "2026-06-09T00:00:00.000Z", "id": "2", "name": "youtube" }
+  ]
+}
