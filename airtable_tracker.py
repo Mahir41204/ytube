@@ -70,54 +70,56 @@ def update_status(record_id: str, status: str, **extra_fields) -> dict:
 
 def get_reviewed_tools() -> list[str]:
     """
-    Return a list of tool names already in Airtable (any status).
-    Used by discover.py to avoid re-reviewing the same tool.
+    Return tool names already in Airtable to avoid duplicates.
+    Returns empty list (silently) if Airtable is unreachable or token lacks access.
     """
-    tools = []
-    offset = None
-
-    while True:
-        params: dict = {"fields[]": "Tool Name", "pageSize": 100}
-        if offset:
-            params["offset"] = offset
-
-        resp = requests.get(_BASE, headers=_HEADERS, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-
-        for record in data.get("records", []):
-            name = record.get("fields", {}).get("Tool Name")
-            if name:
-                tools.append(name)
-
-        offset = data.get("offset")
-        if not offset:
-            break
-
-    log.info(f"Found {len(tools)} already-reviewed tools in Airtable.")
-    return tools
+    try:
+        tools = []
+        offset = None
+        while True:
+            params = {"fields[]": "Tool Name", "pageSize": 100}
+            if offset:
+                params["offset"] = offset
+            resp = requests.get(_BASE, headers=_HEADERS, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            for record in data.get("records", []):
+                name = record.get("fields", {}).get("Tool Name")
+                if name:
+                    tools.append(name)
+            offset = data.get("offset")
+            if not offset:
+                break
+        log.info(f"Found {len(tools)} already-reviewed tools in Airtable.")
+        return tools
+    except Exception as exc:
+        log.warning(f"Airtable get_reviewed_tools failed (skipping dedup): {exc}")
+        return []
 
 
 def get_pending_topics() -> list[dict]:
     """
-    Fetch records with Status == 'Queued' so the pipeline can pick up
-    manually added topics from Airtable.
+    Fetch records with Status == 'Queued' for manual queue processing.
+    Returns empty list if Airtable is unreachable.
     """
-    params = {
-        "filterByFormula": "{Status} = 'Queued'",
-        "fields[]": ["Tool Name", "Category", "Notes"],
-    }
-    resp = requests.get(_BASE, headers=_HEADERS, params=params, timeout=15)
-    resp.raise_for_status()
-    records = resp.json().get("records", [])
-
-    topics = []
-    for r in records:
-        f = r.get("fields", {})
-        topics.append({
-            "record_id":    r["id"],
-            "name":         f.get("Tool Name", ""),
-            "category":     f.get("Category", "Tech"),
-            "search_context": f.get("Notes", ""),
-        })
-    return topics
+    try:
+        params = {
+            "filterByFormula": "{Status} = 'Queued'",
+            "fields[]": ["Tool Name", "Category", "Notes"],
+        }
+        resp = requests.get(_BASE, headers=_HEADERS, params=params, timeout=15)
+        resp.raise_for_status()
+        records = resp.json().get("records", [])
+        topics = []
+        for r in records:
+            f = r.get("fields", {})
+            topics.append({
+                "record_id":      r["id"],
+                "name":           f.get("Tool Name", ""),
+                "category":       f.get("Category", "Tech"),
+                "search_context": f.get("Notes", ""),
+            })
+        return topics
+    except Exception as exc:
+        log.warning(f"Airtable get_pending_topics failed: {exc}")
+        return []
