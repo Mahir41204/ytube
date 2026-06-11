@@ -10,7 +10,7 @@ load_dotenv()
 # ── Google Gemini (free tier: 1,500 req/day) ───────────────────────────────
 # Get key at: https://aistudio.google.com/app/apikey  (no credit card needed)
 GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL        = "gemini-1.5-flash"
+GEMINI_MODEL        = "gemini-2.5-flash"
 
 # ── gTTS (Google Text-to-Speech) ────────────────────────────────────────────
 # No API key needed — uses Google Translate TTS endpoint, completely free
