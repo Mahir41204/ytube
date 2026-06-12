@@ -49,6 +49,25 @@ VIRAL_EXAMPLES = [
 ]
 
 
+def _extract_json_payload(raw: str):
+    raw = raw.strip()
+    if "```" in raw:
+        parts = [part.strip() for part in raw.split("```") if part.strip()]
+        for part in parts:
+            if part.startswith("json"):
+                raw = part[4:].strip()
+                break
+        else:
+            raw = parts[0]
+
+    start_candidates = [raw.find("["), raw.find("{")]
+    start_candidates = [idx for idx in start_candidates if idx != -1]
+    if start_candidates:
+        raw = raw[min(start_candidates):]
+
+    return json.loads(raw)
+
+
 def discover_topics(n_topics: int = 3, already_done=None) -> list:
     skip = ", ".join(already_done) if already_done else "none"
 
@@ -70,14 +89,10 @@ def discover_topics(n_topics: int = 3, already_done=None) -> list:
             system_instruction=SYSTEM,
             temperature=0.95,   # higher creativity for topic variety
             max_output_tokens=1024,
+            response_mime_type="application/json",
         ),
     )
-    raw = response.text.strip()
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"): raw = raw[4:]
-
-    topics = json.loads(raw.strip())
+    topics = _extract_json_payload(response.text)
     # Ensure music_style is set correctly
     for t in topics:
         if "music_style" not in t:
