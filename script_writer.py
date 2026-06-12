@@ -1,9 +1,11 @@
 """
-script_writer.py — Generates full review scripts using Google Gemini.
-Free tier: 1,500 requests/day, no credit card required.
+script_writer.py — Writes immersive second-person scenario scripts.
+The viewer is always "You". Never "Roman soldiers usually..." — always "You wake up..."
+
+Output includes the full narration split into timed scenes,
+each with a cinematic image prompt for Pollinations.ai.
 """
-import json
-import logging
+import json, logging
 from google import genai
 from google.genai import types
 from config import GEMINI_API_KEY, GEMINI_MODEL
@@ -11,70 +13,100 @@ from config import GEMINI_API_KEY, GEMINI_MODEL
 log = logging.getLogger(__name__)
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-SCRIPT_SYSTEM = """You are a professional tech YouTuber who writes punchy, honest review scripts.
-Your videos are direct, skip filler, and always have a clear opinion.
+SYSTEM = """You write immersive first-person YouTube video scripts.
+The VIEWER is the main character. Always use "You", never "they" or third person.
+Never say "Roman soldiers usually..." — say "You wake up before sunrise."
 
-Respond with ONLY a valid JSON object — no markdown fences, no extra text:
+Respond ONLY with valid JSON — no markdown, no extra text:
 {
-  "title": "YouTube title (max 60 chars, SEO-optimised and compelling)",
-  "description": "YouTube description (250-300 words). Include: hook, what the tool does, 3 key points, verdict, timestamps [00:00 Intro | 01:00 Features | 02:30 Verdict], 3-5 hashtags at end",
-  "tags": ["tag1", "tag2"],
-  "thumbnail_text": "Short punchy thumbnail overlay (max 18 chars, e.g. 'Worth It?' or 'GAME CHANGER')",
-  "rating": 7.5,
-  "script": "Full voiceover — conversational, no stage directions, no headings. Just the words to speak. 350-450 words.",
-  "visual_queries": ["pexels video search term 1", "pexels video search term 2"],
-  "key_points": ["Point 1 (max 6 words)", "Point 2", "Point 3", "Point 4"],
-  "duration_estimate": 200
+  "yt_title": "Your Life as a Roman Soldier (60 chars max, include 'Your Life')",
+  "yt_description": "Compelling YT description, 200 words, end with 5 hashtags",
+  "yt_tags": ["tag1", "tag2"],
+  "thumbnail_text": "CAN YOU SURVIVE? (max 20 chars, dramatic question or statement)",
+  "thumbnail_danger": "One-line danger element for thumbnail art direction",
+  "voiceover_script": "The COMPLETE narration as one continuous text block. Pure speech — no [brackets], no scene labels, no directions. This is exactly what gets spoken.",
+  "scenes": [
+    {
+      "narration": "Exact portion of voiceover_script for this scene.",
+      "image_prompt": "Detailed Pollinations.ai image prompt (see rules below)",
+      "animation": "slow_zoom_in",
+      "camera": "first_person"
+    }
+  ]
 }
 
-Script structure (woven naturally into narration):
-1. Hook — bold claim or question (15 sec)
-2. What it is and who it's for (30 sec)
-3. 3-4 key features, honest take (75 sec)
-4. Pricing (15 sec)
-5. Pros and cons — blunt (30 sec)
-6. Verdict + rating out of 10 (20 sec)
-7. Like and subscribe CTA (10 sec)
+SCRIPT STRUCTURE (weave naturally, no headings):
+1. Hook (0-15s): Drop viewer INTO the scenario immediately. Danger, urgency, strangeness.
+2. Arrival (15-40s): Where and when. What you see, smell, feel first.
+3. First Problem (40-80s): Something immediately threatens you or confuses you.
+4. Learning (80-130s): You figure out how to survive the basics. Daily reality.
+5. Major Threat (130-180s): Something big goes wrong. Life is in danger.
+6. Survival (180-220s): How you cope. Decisions. Consequences.
+7. Climax (220-250s): Peak moment of the scenario.
+8. Outcome + Final Reflection (250-270s): Fast forward. How it ends. What it meant.
 
-visual_queries: 5-7 Pexels search terms matching the review content
-key_points: short lower-third text overlays (4-6 items, max 6 words each)"""
+SCENE RULES:
+- 12-18 scenes total
+- Each scene narration: 2-4 sentences max
+- voiceover_script must be ALL scene narrations joined together (nothing omitted)
+
+IMAGE PROMPT RULES (critical for quality):
+- Style suffix always: "semi realistic digital painting, cinematic lighting, high detail, storytelling illustration, documentary style, dramatic atmosphere, 16:9"
+- camera "first_person": describe what viewer's hands/feet/tools look like in frame
+- camera "over_shoulder": viewer sees back of character's head in scene
+- camera "wide_cinematic": epic establishing or battle shot
+- Be specific: time of day, weather, clothing, environment details
+- No modern elements for historical topics
+
+animation must be one of: slow_zoom_in | slow_zoom_out | pan_right | pan_left | static"""
+
+SCRIPT_FORMULA = """
+Script formula reminders:
+- Problem → Decision → Consequence → New Problem (repeat)
+- Viewer must FEEL they are there, not learn facts
+- Use sensory details: cold, hunger, smell of smoke, weight of armour
+- Vary sentence length: short punchy lines for danger, longer for wonder
+- End each scene on a mini-cliffhanger or revelation when possible
+"""
 
 
-def generate_script(
-    tool_name: str,
-    category: str,
-    search_context: str = "",
-    why_review_now: str = "",
-) -> dict:
-    """Generate a full review script for a tool using Gemini."""
-    prompt = f"Write a complete YouTube review script for: **{tool_name}**\nCategory: {category}\n"
-    if why_review_now:
-        prompt += f"Why it's relevant now: {why_review_now}\n"
-    if search_context:
-        prompt += f"Known facts: {search_context}\n"
-    prompt += (
-        "\nBe specific about features and pricing. "
-        "Return the JSON object as specified in your instructions."
+def generate_script(topic: dict) -> dict:
+    """
+    Generate a full immersive script for a 'Your Life as...' topic.
+    Returns the JSON with voiceover_script, scenes, and YouTube metadata.
+    """
+    prompt = (
+        f"Write a complete immersive video script for: **{topic['title']}**\n\n"
+        f"Topic type: {topic.get('topic_type', 'general')}\n"
+        f"Hook idea: {topic.get('hook', '')}\n"
+        f"Setting context: {topic.get('setting', '')}\n\n"
+        f"{SCRIPT_FORMULA}\n"
+        "Generate 12-16 scenes covering the full experience from arrival to outcome.\n"
+        "The voiceover_script must be gripping, immersive, and feel like a journey.\n"
+        "Return only the JSON object."
     )
 
-    log.info(f"Generating script for '{tool_name}' with Gemini...")
+    log.info(f"Writing immersive script for '{topic['title']}'...")
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=SCRIPT_SYSTEM,
-            temperature=0.8,
-            max_output_tokens=4096,
+            system_instruction=SYSTEM,
+            temperature=0.85,
+            max_output_tokens=8192,
         ),
     )
 
     raw = response.text.strip()
     if "```" in raw:
         raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
+        if raw.startswith("json"): raw = raw[4:]
 
     data = json.loads(raw.strip())
-    data["tags"] = data.get("tags", [])[:15]
-    log.info(f"Script ready for '{tool_name}' (~{data.get('duration_estimate', '?')}s)")
+    data["yt_tags"] = data.get("yt_tags", [])[:15]
+    data["topic_type"] = topic.get("topic_type", "general")
+    data["music_style"] = topic.get("music_style", "orchestral_documentary")
+
+    log.info(f"Script ready: {len(data.get('scenes', []))} scenes, "
+             f"{len(data.get('voiceover_script', '').split())} words")
     return data

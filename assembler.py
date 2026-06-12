@@ -1,311 +1,228 @@
 """
-assembler.py — Assembles the final review video using FFmpeg.
+assembler.py — Assembles the final immersive scenario video.
 
-Structure:
-  [Intro card 4s] → [Stock footage + voiceover + text overlays] → [Outro card 4s]
-
-All clips are normalised to 1920×1080@30fps before concatenation.
+Pipeline:
+  1. Calculate per-scene duration from word count
+  2. Apply Ken Burns animation to each image (zoom / pan)
+  3. Add subtitle overlay (scene narration at bottom)
+  4. Crossfade between scenes
+  5. Mux voiceover + optional background music
 """
-import os
-import json
-import logging
-import subprocess
-import tempfile
-from config import VIDEO_FPS, INTRO_DURATION_SEC, OUTRO_DURATION_SEC
+import os, json, math, random, logging, subprocess, textwrap
+from config import VIDEO_FPS, SCENE_MIN_DURATION, SPEAKING_WPM, TRANSITION_DURATION, MUSIC_VOLUME
 
 log = logging.getLogger(__name__)
 
-FONT_BOLD   = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT_NORMAL = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT      = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _run(cmd: list[str], label: str = "ffmpeg"):
-    """Run an FFmpeg command, raising on failure with captured stderr."""
-    log.debug(f"[{label}] {' '.join(cmd)}")
+def _run(cmd, label="ffmpeg"):
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"FFmpeg failed ({label}):\n{result.stderr[-2000:]}"
-        )
+        raise RuntimeError(f"FFmpeg [{label}] failed:\n{result.stderr[-3000:]}")
+
+def _duration(path):
+    r = subprocess.run(
+        ["ffprobe","-v","quiet","-print_format","json","-show_format", path],
+        capture_output=True, text=True, check=True)
+    return float(json.loads(r.stdout)["format"]["duration"])
+
+def _words(text):
+    return len(text.split())
+
+def _escape(t):
+    return (t.replace("\\","\\\\")
+             .replace("'", "\u2019")
+             .replace(":", "\\:")
+             .replace("%","\\%")
+             .replace("[","\\[").replace("]","\\]"))
+
+def _wrap(text, width=60):
+    """Word-wrap text for subtitle display."""
+    lines = textwrap.wrap(text, width=width)
+    return "\\n".join(_escape(l) for l in lines[:3])  # max 3 lines
 
 
-def get_duration(path: str) -> float:
-    """Return the duration of a media file in seconds."""
-    result = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
-        capture_output=True, text=True, check=True,
+# ── Ken Burns animations ───────────────────────────────────────────────────
+
+def _ken_burns_filter(animation: str, duration: float, w=1920, h=1080) -> str:
+    d = max(1, int(duration * VIDEO_FPS))
+    if animation == "slow_zoom_in":
+        return (f"zoompan=z='min(zoom+0.0008,1.3)':d={d}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={VIDEO_FPS}")
+    elif animation == "slow_zoom_out":
+        return (f"zoompan=z='if(eq(on,1),1.3,max(1.001,zoom-0.0008))':d={d}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={VIDEO_FPS}")
+    elif animation == "pan_right":
+        return (f"zoompan=z='1.2':d={d}:"
+                f"x='on/{d}*(iw-iw/1.2)':y='(ih-ih/1.2)/2':s={w}x{h}:fps={VIDEO_FPS}")
+    elif animation == "pan_left":
+        return (f"zoompan=z='1.2':d={d}:"
+                f"x='(iw-iw/1.2)-on/{d}*(iw-iw/1.2)':y='(ih-ih/1.2)/2':s={w}x{h}:fps={VIDEO_FPS}")
+    else:  # static with slight zoom
+        return (f"zoompan=z='1.05':d={d}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h}:fps={VIDEO_FPS}")
+
+
+ANIMATIONS = ["slow_zoom_in", "slow_zoom_out", "pan_right", "pan_left"]
+
+def _build_scene_clip(scene: dict, workdir: str, idx: int) -> str:
+    """Render one image → Ken Burns animated clip with subtitle."""
+    img       = scene["image_path"]
+    duration  = scene["duration"]
+    anim      = scene.get("animation", random.choice(ANIMATIONS))
+    narration = scene.get("narration", "")
+    out       = os.path.join(workdir, f"scene_{idx:03d}.mp4")
+
+    kb_filter = _ken_burns_filter(anim, duration)
+    sub_text  = _wrap(narration, width=55)
+
+    # Fade in/out alpha for subtitle
+    fade_in  = 0.3
+    fade_out = max(0, duration - 0.4)
+
+    subtitle_filter = (
+        # Dark bar behind text
+        f"drawbox=x=0:y=ih-160:w=iw:h=160:color=black@0.55:t=fill,"
+        # Subtitle text
+        f"drawtext=text='{sub_text}':"
+        f"fontfile={FONT}:fontsize=38:fontcolor=white:"
+        f"x=(w-text_w)/2:y=h-130:"
+        f"alpha='if(lt(t,{fade_in}),t/{fade_in},"
+              f"if(gt(t,{fade_out}),({duration}-t)/{(duration-fade_out) or 0.1},1))'"
     )
-    info = json.loads(result.stdout)
-    return float(info["format"]["duration"])
 
+    fade_filter = f"fade=t=in:st=0:d={min(0.4,duration*0.1)},fade=t=out:st={duration-0.35}:d=0.35"
 
-def _escape(text: str) -> str:
-    """Escape special characters for FFmpeg drawtext."""
-    return (
-        text.replace("\\", "\\\\")
-            .replace("'",  "\u2019")   # curly apostrophe — avoids shell quoting hell
-            .replace(":",  "\\:")
-            .replace("%",  "\\%")
-    )
-
-
-# ── Stage builders ─────────────────────────────────────────────────────────
-
-def create_title_card(
-    title: str,
-    duration: float,
-    output_path: str,
-    subtitle: str = "Full Review",
-    bg_color: str = "0x0f172a",
-) -> str:
-    """Render an animated title card (fade-in text on dark background)."""
-    title_esc    = _escape(title)
-    subtitle_esc = _escape(subtitle)
-    fade_expr    = f"if(lt(t,0.6),t/0.6,if(gt(t,{duration}-0.5),({duration}-t)/0.5,1))"
-
-    vf = (
-        # Title
-        f"drawtext=text='{title_esc}'"
-        f":fontfile={FONT_BOLD}:fontsize=88:fontcolor=white"
-        f":x=(w-text_w)/2:y=(h-text_h)/2-55:alpha='{fade_expr}',"
-        # Subtitle
-        f"drawtext=text='{subtitle_esc}'"
-        f":fontfile={FONT_NORMAL}:fontsize=40:fontcolor=#94a3b8"
-        f":x=(w-text_w)/2:y=(h-text_h)/2+60:alpha='{fade_expr}'"
-    )
+    full_vf = f"{kb_filter},{subtitle_filter},{fade_filter},format=yuv420p"
 
     _run([
         "ffmpeg", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c={bg_color}:size=1920x1080:rate={VIDEO_FPS}:duration={duration}",
-        "-vf", vf, "-an",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-        output_path,
-    ], "title_card")
-    return output_path
-
-
-def normalise_clip(src: str, duration: float, output_path: str) -> str:
-    """
-    Scale and loop/trim a video clip to 1920×1080 @ fps, exactly `duration` seconds.
-    Strips original audio.
-    """
-    _run([
-        "ffmpeg", "-y",
-        "-stream_loop", "-1",
-        "-i", src,
+        "-loop", "1", "-i", img,
         "-t", str(duration),
-        "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,"
-               "crop=1920:1080,"
-               f"fps={VIDEO_FPS}",
-        "-an",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-        output_path,
-    ], "normalise")
-    return output_path
+        "-vf", full_vf,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-an", out,
+    ], f"scene_{idx}")
+    return out
 
 
-def add_lower_third(
-    src: str,
-    text: str,
-    appear_at: float,
-    show_for: float,
-    output_path: str,
-) -> str:
-    """Overlay a lower-third text box on a video segment."""
-    text_esc  = _escape(text)
-    enable    = f"between(t,{appear_at},{appear_at + show_for})"
-    alpha_in  = f"if(lt(t-{appear_at},0.3),(t-{appear_at})/0.3,1)"
-    alpha_out = (
-        f"if(gt(t,{appear_at + show_for - 0.3}),"
-        f"({appear_at + show_for}-t)/0.3,1)"
-    )
-    alpha = f"min({alpha_in},{alpha_out})"
+# ── Scene timing ───────────────────────────────────────────────────────────
 
-    vf = (
-        # Semi-transparent dark bar
-        f"drawbox=x=0:y=ih-110:w=iw:h=110:color=black@0.55:t=fill:enable='{enable}',"
-        # Text
-        f"drawtext=text='{text_esc}'"
-        f":fontfile={FONT_BOLD}:fontsize=34:fontcolor=white"
-        f":x=50:y=h-72:alpha='{alpha}'"
-    )
+def _assign_durations(scenes: list, total_audio_duration: float) -> list:
+    """
+    Distribute audio duration across scenes proportional to word count.
+    Every scene gets at least SCENE_MIN_DURATION seconds.
+    """
+    counts  = [max(1, _words(s.get("narration", ""))) for s in scenes]
+    total_w = sum(counts)
 
-    _run([
-        "ffmpeg", "-y", "-i", src,
-        "-vf", vf,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-        "-an", output_path,
-    ], "lower_third")
-    return output_path
+    for i, scene in enumerate(scenes):
+        scene["duration"] = max(
+            SCENE_MIN_DURATION,
+            total_audio_duration * counts[i] / total_w
+        )
+    # Normalise so total matches audio exactly
+    ratio = total_audio_duration / sum(s["duration"] for s in scenes)
+    for s in scenes:
+        s["duration"] = max(SCENE_MIN_DURATION, s["duration"] * ratio)
+
+    log.info(f"Scene durations: {[round(s['duration'],1) for s in scenes]}")
+    return scenes
 
 
-def concat_silent_clips(paths: list[str], output_path: str) -> str:
-    """Concatenate video-only clips (no audio) using the concat demuxer."""
-    list_file = output_path + ".txt"
-    with open(list_file, "w") as f:
-        for p in paths:
-            f.write(f"file '{p}'\n")
+# ── Concat + mix ───────────────────────────────────────────────────────────
 
-    _run([
-        "ffmpeg", "-y",
-        "-f", "concat", "-safe", "0", "-i", list_file,
-        "-c", "copy",
-        output_path,
-    ], "concat")
-    os.remove(list_file)
-    return output_path
+def _concat_clips(clips: list, out: str) -> str:
+    lst = out + ".txt"
+    with open(lst, "w") as f:
+        for c in clips:
+            f.write(f"file '{c}'\n")
+    _run(["ffmpeg","-y","-f","concat","-safe","0","-i",lst,"-c","copy", out], "concat")
+    os.remove(lst)
+    return out
 
 
-def mux_audio(video_path: str, audio_path: str, output_path: str) -> str:
-    """Combine the silent assembled video with the voiceover audio."""
-    _run([
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-i", audio_path,
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-ar", "44100",
-        "-ac", "2",
-        "-b:a", "192k",
-        "-shortest",
-        output_path,
-    ], "mux_audio")
-    return output_path
+def _mux_with_audio(video: str, voiceover: str, music_path: str, out: str) -> str:
+    """Combine silent video with voiceover and optional background music."""
+    if music_path and os.path.exists(music_path):
+        music_dur = _duration(music_path)
+        video_dur = _duration(video)
+        # Loop music if shorter than video
+        loop = math.ceil(video_dur / music_dur) if music_dur < video_dur else 1
 
-# ── Main assembler ─────────────────────────────────────────────────────────
+        _run([
+            "ffmpeg", "-y",
+            "-i", video,
+            "-i", voiceover,
+            "-stream_loop", str(loop), "-i", music_path,
+            "-filter_complex",
+                f"[1:a]volume=1.0[vo];"
+                f"[2:a]volume={MUSIC_VOLUME},atrim=0:{video_dur}[bg];"
+                f"[vo][bg]amix=inputs=2:duration=first[a]",
+            "-map", "0:v", "-map", "[a]",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-shortest", out,
+        ], "mux_music")
+    else:
+        _run([
+            "ffmpeg", "-y",
+            "-i", video, "-i", voiceover,
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-shortest", out,
+        ], "mux_voice")
+    return out
+
+
+# ── Public API ─────────────────────────────────────────────────────────────
 
 def assemble_video(
     audio_path: str,
-    video_clips: list[str],
-    tool_name: str,
-    key_points: list[str],
+    scenes: list,
+    script_data: dict,
     output_path: str,
+    music_path: str = None,
 ) -> str:
     """
-    Full pipeline: intro → stock clips with overlays → outro, muxed with voiceover.
+    Full assembly: Ken Burns clips → concat → mux with voice + music.
 
     Args:
-        audio_path:   Path to the ElevenLabs .mp3 file.
-        video_clips:  List of downloaded Pexels .mp4 clip paths.
-        tool_name:    Used for the intro title card.
-        key_points:   Short phrases shown as lower-thirds during the review.
-        output_path:  Where to save the final .mp4.
+        audio_path:   Path to voiceover .mp3
+        scenes:       List of scene dicts with 'image_path' added by visuals.py
+        script_data:  Full script dict (title, topic_type, etc.)
+        output_path:  Final .mp4 destination
+        music_path:   Optional background music .mp3
 
     Returns:
-        output_path on success.
+        output_path
     """
-    workdir = os.path.join(os.path.dirname(output_path), "asm_work")
+    workdir = os.path.join(os.path.dirname(output_path), "_asm")
     os.makedirs(workdir, exist_ok=True)
 
-    if not video_clips:
-        raise ValueError("No video clips provided — cannot assemble video.")
+    audio_dur = _duration(audio_path)
+    log.info(f"Audio duration: {audio_dur:.1f}s  |  Scenes: {len(scenes)}")
 
-    # ── Measure voiceover duration ────────────────────────────────────────
-    audio_duration = get_duration(audio_path)
-    log.info(f"Voiceover duration: {audio_duration:.1f}s")
+    # 1. Assign per-scene durations
+    scenes = _assign_durations(scenes, audio_dur)
 
-    # ── Intro title card ──────────────────────────────────────────────────
-    intro_path = os.path.join(workdir, "intro.mp4")
-    create_title_card(tool_name, INTRO_DURATION_SEC, intro_path)
+    # 2. Render each scene as an animated clip
+    scene_clips = []
+    for i, scene in enumerate(scenes):
+        log.info(f"  Rendering scene {i+1}/{len(scenes)} ({scene['duration']:.1f}s)...")
+        clip = _build_scene_clip(scene, workdir, i)
+        scene_clips.append(clip)
 
-    # ── Outro card ────────────────────────────────────────────────────────
-    outro_path = os.path.join(workdir, "outro.mp4")
-    create_title_card(
-        "Like & Subscribe",
-        OUTRO_DURATION_SEC,
-        outro_path,
-        subtitle="for more tech reviews",
-    )
+    # 3. Concatenate
+    log.info("Concatenating scenes...")
+    concat_path = os.path.join(workdir, "concat.mp4")
+    _concat_clips(scene_clips, concat_path)
 
-    # ── Prepare stock footage body ────────────────────────────────────────
-    # Divide the voiceover time evenly across available clips
-    n_clips = len(video_clips)
-    clip_dur = audio_duration / n_clips
-
-    processed_clips = []
-    for idx, clip_src in enumerate(video_clips):
-        norm_path    = os.path.join(workdir, f"norm_{idx:02d}.mp4")
-        overlay_path = os.path.join(workdir, f"ovl_{idx:02d}.mp4")
-
-        # Normalise
-        normalise_clip(clip_src, clip_dur, norm_path)
-
-        # Add lower-third if we have a key point for this slot
-        if idx < len(key_points):
-            add_lower_third(
-                norm_path,
-                key_points[idx],
-                appear_at=1.5,
-                show_for=min(4.5, clip_dur - 2),
-                output_path=overlay_path,
-            )
-            processed_clips.append(overlay_path)
-        else:
-            processed_clips.append(norm_path)
-
-    # ── Concatenate body clips ────────────────────────────────────────────
-    body_path = os.path.join(workdir, "body.mp4")
-    concat_silent_clips(processed_clips, body_path)
-
-    # ── Mux body with voiceover ───────────────────────────────────────────
-    # ── Debug durations ───────────────────────────────────────────────────
-    log.info(f"Body duration: {get_duration(body_path):.1f}s")
-    log.info(f"Audio duration: {audio_duration:.1f}s")
-
-    # ── Normalize voiceover audio ─────────────────────────────────────────
-    voice_fixed = os.path.join(workdir, "voice_fixed.wav")
-
-    _run([
-        "ffmpeg", "-y",
-        "-i", audio_path,
-        "-ar", "44100",
-        "-ac", "2",
-        "-c:a", "pcm_s16le",
-        voice_fixed,
-    ], "normalize_audio")
-
-    # ── Mux body with normalized voiceover ────────────────────────────────
-    body_audio_path = os.path.join(workdir, "body_audio.mp4")
-    mux_audio(body_path, voice_fixed, body_audio_path)
-
-    # ── Final concatenation: intro + body(+audio) + outro ────────────────
-    # Intro and outro need silent audio tracks so they concat cleanly
-    intro_silent = os.path.join(workdir, "intro_s.mp4")
-    outro_silent = os.path.join(workdir, "outro_s.mp4")
-
-    for src, dst in [(intro_path, intro_silent), (outro_path, outro_silent)]:
-        _run([
-            "ffmpeg", "-y", "-i", src,
-            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=4",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest", dst,
-        ], "add_silent_audio")
-
-    final_list = os.path.join(workdir, "final.txt")
-    with open(final_list, "w") as f:
-        for p in [intro_silent, body_audio_path, outro_silent]:
-            f.write(f"file '{p}'\n")
-
-    _run([
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", final_list,
-        "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "18",
-        "-c:a", "aac",
-        "-ar", "44100",
-        "-ac", "2",
-        "-b:a", "192k",
-        "-movflags", "+faststart",
-        output_path,
-    ], "final_render")
+    # 4. Mux with voice + music
+    log.info("Mixing audio...")
+    _mux_with_audio(concat_path, audio_path, music_path, output_path)
 
     log.info(f"Video assembled → {output_path}")
     return output_path

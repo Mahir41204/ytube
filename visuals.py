@@ -1,102 +1,112 @@
 """
-visuals.py — Fetches and downloads stock video clips from Pexels.
-Clips are downloaded to a temp directory, ready for FFmpeg assembly.
+visuals.py — Generates cinematic scene images using Pollinations.ai.
+Completely free, no API key required. Uses the Flux model.
 """
-import os
-import logging
-import requests
-from config import PEXELS_API_KEY
+import os, time, logging, random, requests
+from urllib.parse import quote
+from config import POLLINATIONS_URL, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_MODEL
 
 log = logging.getLogger(__name__)
 
-PEXELS_VIDEO_URL = "https://api.pexels.com/videos/search"
-PREFERRED_QUALITY = ("hd", "sd")   # Try HD first, fall back to SD
-MIN_CLIP_DURATION  = 8             # seconds — skip clips shorter than this
+# Appended to every prompt for consistent cinematic style
+STYLE_SUFFIX = (
+    "semi realistic digital painting, cinematic lighting, high detail, "
+    "storytelling illustration, immersive perspective, documentary style, "
+    "dramatic atmosphere, professional concept art, 16:9 widescreen"
+)
+
+# Styles to explicitly avoid
+NEGATIVE_HINT = "no anime, no cartoon, no pixar, no comic book, no modern elements"
 
 
-def _best_file(video_files: list[dict]) -> dict | None:
-    """Pick the best available video file (HD > SD, 1080p > 720p)."""
-    for quality in PREFERRED_QUALITY:
-        candidates = [f for f in video_files if f.get("quality") == quality]
-        if candidates:
-            # Prefer 1080p within quality tier
-            hd = [f for f in candidates if f.get("height", 0) >= 1080]
-            return (hd or candidates)[0]
-    return video_files[0] if video_files else None
-
-
-def fetch_stock_videos(
-    queries: list[str],
-    clips_per_query: int = 1,
-    download_dir: str = "/tmp/pipeline/clips",
-) -> list[str]:
+def generate_scene_image(
+    prompt: str,
+    output_path: str,
+    seed: int = None,
+    retries: int = 3,
+) -> str:
     """
-    Search Pexels for each query and download the best matching clip.
+    Generate a single 1920×1080 image for a scene via Pollinations.ai.
 
     Args:
-        queries:         List of search terms (from script_writer visual_queries).
-        clips_per_query: How many clips to download per query.
-        download_dir:    Where to save .mp4 files.
+        prompt:       Scene description (image_prompt from script).
+        output_path:  Where to save the .jpg file.
+        seed:         Fixed seed for reproducibility (random if None).
+        retries:      How many times to retry on failure.
 
     Returns:
-        List of local file paths for downloaded clips.
+        output_path on success.
     """
-    os.makedirs(download_dir, exist_ok=True)
-    headers = {"Authorization": PEXELS_API_KEY}
-    paths = []
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    full_prompt = f"{prompt}, {STYLE_SUFFIX}"
+    seed = seed or random.randint(1, 999999)
 
-    for query in queries:
-        log.info(f"Fetching Pexels clip for: '{query}'")
+    params = {
+        "width":  IMAGE_WIDTH,
+        "height": IMAGE_HEIGHT,
+        "model":  IMAGE_MODEL,
+        "nologo": "true",
+        "seed":   seed,
+    }
+    url = f"{POLLINATIONS_URL}/{quote(full_prompt)}"
+
+    for attempt in range(1, retries + 1):
         try:
-            resp = requests.get(
-                PEXELS_VIDEO_URL,
-                headers=headers,
-                params={
-                    "query": query,
-                    "per_page": clips_per_query + 3,   # fetch a few extras to filter
-                    "orientation": "landscape",
-                    "size": "medium",
-                },
-                timeout=20,
-            )
+            log.info(f"  Generating image (attempt {attempt}): {prompt[:60]}...")
+            resp = requests.get(url, params=params, timeout=120)
             resp.raise_for_status()
-            videos = resp.json().get("videos", [])
 
-            # Filter out very short clips
-            videos = [v for v in videos if v.get("duration", 0) >= MIN_CLIP_DURATION]
+            # Verify it's actually an image
+            if not resp.content[:4] in (b'\xff\xd8\xff\xe0', b'\xff\xd8\xff\xe1',
+                                         b'\x89PNG', b'GIF8'):
+                # Pollinations sometimes returns an error page — retry
+                raise ValueError("Response is not a valid image")
 
-            downloaded = 0
-            for video in videos:
-                if downloaded >= clips_per_query:
-                    break
-
-                file_info = _best_file(video.get("video_files", []))
-                if not file_info:
-                    continue
-
-                video_url = file_info["link"]
-                safe_query = query.replace(" ", "_")[:40]
-                local_path = os.path.join(download_dir, f"{safe_query}_{video['id']}.mp4")
-
-                if os.path.exists(local_path):
-                    log.info(f"  Clip already cached: {local_path}")
-                    paths.append(local_path)
-                    downloaded += 1
-                    continue
-
-                log.info(f"  Downloading clip {video['id']} ({file_info.get('quality','?')})")
-                dl = requests.get(video_url, stream=True, timeout=60)
-                dl.raise_for_status()
-                with open(local_path, "wb") as f:
-                    for chunk in dl.iter_content(chunk_size=65536):
-                        f.write(chunk)
-
-                paths.append(local_path)
-                downloaded += 1
+            with open(output_path, "wb") as f:
+                f.write(resp.content)
+            log.info(f"  Image saved: {output_path} ({len(resp.content)//1024} KB)")
+            return output_path
 
         except Exception as exc:
-            log.warning(f"  Failed to fetch clip for '{query}': {exc}")
+            log.warning(f"  Image generation attempt {attempt} failed: {exc}")
+            if attempt < retries:
+                wait = 10 * attempt
+                log.info(f"  Retrying in {wait}s...")
+                time.sleep(wait)
+                seed = random.randint(1, 999999)   # try a different seed
+
+    raise RuntimeError(f"Failed to generate image after {retries} attempts: {prompt[:80]}")
+
+
+def generate_scene_images(scenes: list, output_dir: str) -> list:
+    """
+    Generate one image per scene.
+
+    Args:
+        scenes:     List of scene dicts from script_writer (must have 'image_prompt').
+        output_dir: Directory to save images.
+
+    Returns:
+        scenes list with 'image_path' added to each scene.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    base_seed = random.randint(1000, 9000)
+
+    for i, scene in enumerate(scenes):
+        out_path = os.path.join(output_dir, f"scene_{i:03d}.jpg")
+
+        # Reuse cached image if it exists (useful for reruns)
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 10_000:
+            log.info(f"  Scene {i+1}: using cached image")
+            scene["image_path"] = out_path
             continue
 
-    log.info(f"Downloaded {len(paths)} clips total.")
-    return paths
+        scene["image_path"] = generate_scene_image(
+            prompt=scene["image_prompt"],
+            output_path=out_path,
+            seed=base_seed + i,
+        )
+        # Small delay to be respectful to the free API
+        time.sleep(2)
+
+    return scenes

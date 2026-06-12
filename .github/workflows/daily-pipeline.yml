@@ -1,74 +1,60 @@
-name: 🎬 Daily Tech Review Videos
+name: 🎬 Daily Immersive Scenario Videos
 
 on:
-  # ── Automatic: runs every day at 9:00 AM IST (3:30 AM UTC) ────────────
   schedule:
-    - cron: '30 3 * * *'
-
-  # ── Manual: trigger instantly from the GitHub Actions tab ─────────────
+    - cron: '30 3 * * *'   # 9:00 AM IST daily
   workflow_dispatch:
     inputs:
-      tool_name:
-        description: 'Review a specific tool (leave blank to auto-discover)'
+      topic:
+        description: 'Specific topic, e.g. "Your Life as a Viking" (blank = auto-discover)'
         required: false
         default: ''
       n_videos:
-        description: 'Number of videos to produce (if auto-discovering)'
+        description: 'Number of videos if auto-discovering'
         required: false
         default: '2'
 
 jobs:
   produce-and-upload:
-    name: Produce & Upload Videos
     runs-on: ubuntu-latest
-    timeout-minutes: 90       # safety limit — 90 min is enough for 2-3 videos
+    timeout-minutes: 120
 
     steps:
+      - uses: actions/checkout@v4
 
-      # ── 1. Get the code ───────────────────────────────────────────────
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      # ── 2. Python setup ───────────────────────────────────────────────
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ── 3. System dependencies ────────────────────────────────────────
-      - name: Install FFmpeg + fonts
+      - name: Install system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg fonts-dejavu-core
           ffmpeg -version | head -1
 
-      # ── 4. Python packages ────────────────────────────────────────────
-      - name: Install Python dependencies
+      - name: Install Python packages
         run: pip install -r requirements.txt
 
-      # ── 5. Run the pipeline ───────────────────────────────────────────
       - name: Run pipeline
         env:
           GEMINI_API_KEY:          ${{ secrets.GEMINI_API_KEY }}
-          PEXELS_API_KEY:          ${{ secrets.PEXELS_API_KEY }}
           YOUTUBE_CLIENT_ID:       ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET:   ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN:   ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           AIRTABLE_API_TOKEN:      ${{ secrets.AIRTABLE_API_TOKEN }}
           AIRTABLE_BASE_ID:        ${{ secrets.AIRTABLE_BASE_ID }}
         run: |
-          if [ -n "${{ github.event.inputs.tool_name }}" ]; then
-            echo "▶ Reviewing specific tool: ${{ github.event.inputs.tool_name }}"
-            python pipeline.py --tool "${{ github.event.inputs.tool_name }}"
+          if [ -n "${{ github.event.inputs.topic }}" ]; then
+            echo "▶ Producing: ${{ github.event.inputs.topic }}"
+            python pipeline.py --topic "${{ github.event.inputs.topic }}"
           else
             N=${{ github.event.inputs.n_videos || '2' }}
             echo "▶ Auto-discovering and producing $N videos..."
             python pipeline.py --n "$N"
           fi
 
-      # ── 6. Upload logs as artifact (useful for debugging) ────────────
-      - name: Upload pipeline log
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:

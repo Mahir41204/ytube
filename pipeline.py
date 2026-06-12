@@ -1,36 +1,26 @@
 """
-pipeline.py — Main orchestrator for the automated tech review video pipeline.
+pipeline.py — Orchestrator for the immersive scenario video pipeline.
 
-Typical usage:
-  python pipeline.py                     # Auto-discover 3 topics & run
-  python pipeline.py --n 5               # Discover 5 topics
-  python pipeline.py --tool "Cursor AI"  # Review one specific tool
-  python pipeline.py --queued            # Process tools added manually in Airtable
+Usage:
+  python pipeline.py                        # Auto-discover 2 topics
+  python pipeline.py --n 5                  # Produce 5 videos
+  python pipeline.py --topic "Your Life as a Viking"
+  python pipeline.py --queued               # Process Airtable queue
 """
-import os
-import sys
-import logging
-import argparse
-import tempfile
-import time
-from pathlib import Path
+import os, sys, logging, argparse, tempfile, time
 
 import config as cfg
 from discover         import discover_topics
 from script_writer    import generate_script
 from voice_gen        import generate_voiceover
-from visuals          import fetch_stock_videos
+from visuals          import generate_scene_images
 from assembler        import assemble_video
 from thumbnail        import create_thumbnail
+from music_manager    import get_music, setup_music_dirs
 from uploader         import upload_video
-from airtable_tracker import (
-    create_video_record,
-    update_status,
-    get_reviewed_tools,
-    get_pending_topics,
-)
+from airtable_tracker import (create_video_record, update_status,
+                               get_reviewed_tools, get_pending_topics)
 
-# ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -43,179 +33,127 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ── Single-video pipeline ──────────────────────────────────────────────────
-
-def run_single(topic: dict, record_id: str | None = None):
-    """
-    Process one topic end-to-end:
-      Discover → Script → Voice → Visuals → Assemble → Thumbnail → Upload
-    """
-    tool_name = topic["name"]
-    category  = topic.get("category", "Tech")
-
-    log.info(f"━━━  Starting pipeline for: {tool_name}  ━━━")
-
-    # Create Airtable record (skip if already created from get_pending_topics)
+def run_single(topic: dict, record_id: str = None):
+    title = topic["title"]
+    log.info(f"\n{'━'*55}\n  🎬  {title}\n{'━'*55}")
     if not record_id:
-        record_id = create_video_record(tool_name, category)
+        record_id = create_video_record(title, topic.get("topic_type", "general"))
 
-    with tempfile.TemporaryDirectory(prefix="review_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="scenario_") as tmp:
         try:
-            # ── 1. Script ─────────────────────────────────────────────────
-            log.info(f"[1/6] Generating script for '{tool_name}'...")
+            # 1. Script ────────────────────────────────────────────────────
+            log.info("[1/7] Writing immersive script...")
             update_status(record_id, "Scripting")
-            script = generate_script(
-                tool_name=tool_name,
-                category=category,
-                search_context=topic.get("search_context", topic.get("tagline", "")),
-                why_review_now=topic.get("why_review_now", ""),
-            )
-            update_status(
-                record_id, "Scripted",
-                **{
-                    "YouTube Title":       script["title"],
-                    "Script":              script["script"],
-                    "Estimated Duration":  script.get("duration_estimate", 0),
-                }
-            )
+            script = generate_script(topic)
+            update_status(record_id, "Scripted",
+                          **{"YouTube Title": script["yt_title"],
+                             "Script": script["voiceover_script"]})
 
-            # ── 2. Voiceover ──────────────────────────────────────────────
-            log.info(f"[2/6] Generating voiceover...")
+            # 2. Voiceover ─────────────────────────────────────────────────
+            log.info("[2/7] Generating voiceover...")
             update_status(record_id, "Voicing")
-            audio_path = os.path.join(tmpdir, "voiceover.mp3")
-            generate_voiceover(script["script"], audio_path)
+            audio_path = os.path.join(tmp, "voice.mp3")
+            generate_voiceover(script["voiceover_script"], audio_path)
 
-            # ── 3. Stock footage ──────────────────────────────────────────
-            log.info(f"[3/6] Fetching stock footage...")
-            update_status(record_id, "Fetching Visuals")
-            clip_dir = os.path.join(tmpdir, "clips")
-            clips = fetch_stock_videos(
-                queries=script["visual_queries"],
-                download_dir=clip_dir,
-            )
-            if not clips:
-                raise RuntimeError("No video clips downloaded — cannot assemble.")
+            # 3. Scene images ──────────────────────────────────────────────
+            log.info(f"[3/7] Generating {len(script['scenes'])} scene images...")
+            update_status(record_id, "Generating Images")
+            img_dir = os.path.join(tmp, "images")
+            scenes  = generate_scene_images(script["scenes"], img_dir)
 
-            # ── 4. Thumbnail ──────────────────────────────────────────────
-            log.info(f"[4/6] Creating thumbnail...")
-            thumb_path = os.path.join(tmpdir, "thumbnail.jpg")
+            # 4. Background music (optional) ───────────────────────────────
+            log.info("[4/7] Selecting background music...")
+            music_path = get_music(script.get("music_style", "orchestral_documentary"))
+
+            # 5. Thumbnail ─────────────────────────────────────────────────
+            log.info("[5/7] Creating thumbnail...")
+            thumb_path = os.path.join(tmp, "thumbnail.jpg")
             create_thumbnail(
-                tool_name=tool_name,
-                thumbnail_text=script.get("thumbnail_text", "Watch This"),
-                category=category,
+                title=script["yt_title"],
+                thumbnail_text=script.get("thumbnail_text", "WATCH THIS"),
+                topic_type=script.get("topic_type", "ancient_history"),
                 output_path=thumb_path,
-                rating=script.get("rating"),
+                thumbnail_danger=script.get("thumbnail_danger", ""),
             )
 
-            # ── 5. Assemble video ─────────────────────────────────────────
-            log.info(f"[5/6] Assembling video...")
+            # 6. Assemble video ─────────────────────────────────────────────
+            log.info("[6/7] Assembling video with Ken Burns animation...")
             update_status(record_id, "Assembling")
-            video_path = os.path.join(tmpdir, "final_video.mp4")
+            video_path = os.path.join(tmp, "final.mp4")
             assemble_video(
                 audio_path=audio_path,
-                video_clips=clips,
-                tool_name=tool_name,
-                key_points=script.get("key_points", []),
+                scenes=scenes,
+                script_data=script,
                 output_path=video_path,
+                music_path=music_path,
             )
 
-            # ── 6. Upload to YouTube ──────────────────────────────────────
-            log.info(f"[6/6] Uploading to YouTube...")
+            # 7. Upload ────────────────────────────────────────────────────
+            log.info("[7/7] Uploading to YouTube...")
             update_status(record_id, "Uploading")
             result = upload_video(
                 video_path=video_path,
-                title=script["title"],
-                description=script["description"],
-                tags=script["tags"],
+                title=script["yt_title"],
+                description=script["yt_description"],
+                tags=script.get("yt_tags", []),
                 thumbnail_path=thumb_path,
             )
-
-            # ── Done ──────────────────────────────────────────────────────
-            update_status(
-                record_id, "Published",
-                **{
-                    "YouTube URL": result["url"],
-                    "YouTube ID":  result["video_id"],
-                }
-            )
+            update_status(record_id, "Published",
+                          **{"YouTube URL": result["url"],
+                             "YouTube ID":  result["video_id"]})
             log.info(f"✅  Published: {result['url']}")
             return result
 
         except Exception as exc:
-            log.error(f"❌  Pipeline failed for '{tool_name}': {exc}", exc_info=True)
+            log.error(f"❌  Failed: {exc}", exc_info=True)
             update_status(record_id, "Error", **{"Error Notes": str(exc)[:500]})
             return None
 
 
-# ── Batch runner ───────────────────────────────────────────────────────────
-
-def run_batch(topics: list[dict], delay_between: int = 10):
-    """Run the pipeline for a list of topics, pausing between each."""
+def run_batch(topics: list, delay: int = 15):
     results = []
     for i, topic in enumerate(topics, 1):
-        log.info(f"\n🎬  Video {i}/{len(topics)}: {topic['name']}\n")
-        result = run_single(topic)
-        results.append(result)
+        log.info(f"\n📽  Video {i}/{len(topics)}")
+        results.append(run_single(topic))
         if i < len(topics):
-            log.info(f"Pausing {delay_between}s before next video...")
-            time.sleep(delay_between)
+            log.info(f"Cooling down {delay}s...")
+            time.sleep(delay)
     return results
 
 
-# ── Entry point ────────────────────────────────────────────────────────────
-
 def main():
-    parser = argparse.ArgumentParser(
-        description="Automated Tech Review Video Pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python pipeline.py                     # Auto-discover 3 topics
-  python pipeline.py --n 5               # Discover & produce 5 videos
-  python pipeline.py --tool "Cursor AI"  # Review one specific tool
-  python pipeline.py --tool "Cursor AI" "Windsurf" "Zed"  # Multiple specific tools
-  python pipeline.py --queued            # Process items queued in Airtable
-        """,
-    )
-    parser.add_argument("--n",       type=int,   default=3,
-                        help="Number of topics to auto-discover (default: 3)")
-    parser.add_argument("--tool",    nargs="+",
-                        help="One or more specific tool names to review")
-    parser.add_argument("--queued",  action="store_true",
-                        help="Process topics manually queued in Airtable")
-    parser.add_argument("--category", default=None,
-                        help="Filter discovery to one category")
+    parser = argparse.ArgumentParser(description="Immersive Scenario Video Pipeline")
+    parser.add_argument("--n",     type=int, default=2, help="Videos to auto-produce")
+    parser.add_argument("--topic", nargs="+", help="Specific topic title(s)")
+    parser.add_argument("--queued",action="store_true", help="Process Airtable queue")
     args = parser.parse_args()
 
-    # Validate API keys before starting
-    try:
-        cfg.validate()
+    try: cfg.validate()
     except EnvironmentError as e:
-        log.error(f"Configuration error: {e}")
-        log.error("Copy .env.example to .env and fill in your API keys.")
-        sys.exit(1)
+        log.error(f"Config error: {e}"); sys.exit(1)
 
-    # Determine topics
+    setup_music_dirs()   # create music/ folder structure if missing
+
     if args.queued:
         topics = get_pending_topics()
         if not topics:
-            log.info("No queued topics found in Airtable. Add rows with Status='Queued'.")
-            sys.exit(0)
-        log.info(f"Found {len(topics)} queued topics in Airtable.")
-        results = []
+            log.info("No queued topics in Airtable."); sys.exit(0)
         for t in topics:
-            rec_id = t.pop("record_id", None)
-            result = run_single(t, record_id=rec_id)
-            results.append(result)
+            rid = t.pop("record_id", None)
+            # Convert 'name' field to 'title' for compatibility
+            if "name" in t and "title" not in t:
+                t["title"] = t.pop("name")
+            run_single(t, record_id=rid)
 
-    elif args.tool:
-        topics = [{"name": t, "category": "Tech"} for t in args.tool]
+    elif args.topic:
+        topics = [{"title": t, "topic_type": "general", "hook": "",
+                   "setting": "", "music_style": "orchestral_documentary"}
+                  for t in args.topic]
         run_batch(topics)
 
     else:
-        cats = [args.category] if args.category else None
         already = get_reviewed_tools()
-        topics  = discover_topics(categories=cats, n_topics=args.n, already_reviewed=already)
+        topics  = discover_topics(n_topics=args.n, already_done=already)
         run_batch(topics)
 
 
