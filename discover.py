@@ -3,7 +3,7 @@ discover.py — Generates "Your Life as..." scenario topics.
 Uses Gemini + Product Hunt trends for inspiration,
 but all topics are crafted around immersive first-person scenarios.
 """
-import json, logging
+import json, logging, re
 from google import genai
 from google.genai import types
 from config import GEMINI_API_KEY, GEMINI_MODEL, TOPIC_TYPES, MUSIC_STYLES
@@ -79,6 +79,13 @@ def discover_topics(n_topics: int = 3, already_done=None) -> list:
         "- Topics must create strong curiosity AND visceral first-person experience\n"
         "- Think: Familiar concept + Unknown daily reality = Viral\n"
         f"- Examples of great topics: {', '.join(VIRAL_EXAMPLES[:6])}\n\n"
+        "Return ONLY a valid JSON array.\n\n"
+        "Example:\n"
+        '["Cursor IDE","Claude 3.5 Sonnet"]\n\n'
+        "No markdown.\n"
+        "No explanations.\n"
+        "No code fences.\n"
+        "No extra text.\n\n"
         f"Return a JSON array of exactly {n_topics} fresh topic objects."
     )
 
@@ -92,7 +99,17 @@ def discover_topics(n_topics: int = 3, already_done=None) -> list:
             response_mime_type="application/json",
         ),
     )
-    topics = _extract_json_payload(response.text)
+    raw = response.text.strip()
+
+    print("=== GEMINI RESPONSE START ===")
+    print(raw)
+    print("=== GEMINI RESPONSE END ===")
+
+    match = re.search(r"\[[\s\S]*?\]", raw)
+    if not match:
+        raise RuntimeError(f"No JSON array found in Gemini response:\n{raw}")
+
+    topics = json.loads(match.group(0))
     # Ensure music_style is set correctly
     for t in topics:
         if "music_style" not in t:
