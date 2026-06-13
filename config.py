@@ -19,6 +19,13 @@ GEMINI_IMAGE_MODEL  = "gemini-2.5-flash-image"
 IMAGE_WIDTH         = 1920
 IMAGE_HEIGHT        = 1080
 
+# Shared mutable flag: set to True by visuals.py/thumbnail.py the first time
+# Gemini image generation returns a quota/billing error (HTTP 429
+# RESOURCE_EXHAUSTED). Once set, all subsequent image requests in this run
+# skip straight to the Pexels fallback instead of wasting time/requests
+# retrying a call that is guaranteed to fail again.
+GEMINI_IMAGE_QUOTA_EXHAUSTED = False
+
 # ── Pexels stock photo search (free fallback for images) ───────────────────
 PEXELS_API_KEY      = os.getenv("PEXELS_API_KEY", "")
 PEXELS_SEARCH_URL   = "https://api.pexels.com/v1/search"

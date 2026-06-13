@@ -9,6 +9,7 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from google import genai
 from google.genai import types
+import config as cfg
 from config import (
     GEMINI_API_KEY, GEMINI_IMAGE_MODEL, PEXELS_API_KEY, PEXELS_SEARCH_URL,
 )
@@ -46,7 +47,7 @@ def create_thumbnail(
 ) -> str:
     """
     Creates a 1280×720 dramatic thumbnail.
-    Uses Pollinations.ai to generate a background image, then overlays text.
+    Uses Gemini (or a Pexels stock photo) to generate a background image, then overlays text.
     Falls back to a painted dark background if image generation fails.
     """
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
@@ -62,24 +63,30 @@ def create_thumbnail(
     )
 
     image_bytes = None
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_IMAGE_MODEL,
-            contents=bg_prompt,
-            config=types.GenerateContentConfig(
-                response_modalities=["Text", "Image"],
-                image_config=types.ImageConfig(aspect_ratio="16:9"),
-                seed=random.randint(1, 99999),
-            ),
-        )
-        for part in response.candidates[0].content.parts:
-            if getattr(part, "inline_data", None) is not None:
-                image_bytes = part.inline_data.data
-                break
-        if image_bytes is None:
-            log.warning("Gemini thumbnail response contained no image data")
-    except Exception as e:
-        log.warning(f"Gemini thumbnail background unavailable: {e}")
+    if not cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED:
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_IMAGE_MODEL,
+                contents=bg_prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["Text", "Image"],
+                    image_config=types.ImageConfig(aspect_ratio="16:9"),
+                    seed=random.randint(1, 99999),
+                ),
+            )
+            for part in response.candidates[0].content.parts:
+                if getattr(part, "inline_data", None) is not None:
+                    image_bytes = part.inline_data.data
+                    break
+            if image_bytes is None:
+                log.warning("Gemini thumbnail response contained no image data")
+        except Exception as e:
+            msg = str(e)
+            if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+                cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED = True
+            log.warning(f"Gemini thumbnail background unavailable: {e}")
+    else:
+        log.info("Gemini image quota already exhausted — using Pexels for thumbnail background")
 
     if image_bytes is None and PEXELS_API_KEY:
         try:
@@ -115,10 +122,6 @@ def create_thumbnail(
     draw.rectangle([0, 0, 10, 720], fill=accent_rgb)
 
     # ── Bottom gradient for text readability ──────────────────────────────
-    for y in range(350, 720):
-        alpha = int((y - 350) / 370 * 200)
-        r = max(0, int(bg.getpixel((640, y))[0]) - alpha // 3)
-        draw.line([(0,y),(1280,y)], fill=(0, 0, 0, 0))
     grad = Image.new("RGBA", (1280, 370), (0, 0, 0, 0))
     gd = ImageDraw.Draw(grad)
     for y in range(370):
@@ -144,8 +147,18 @@ def create_thumbnail(
 
     # ── "WATCH THIS" pill in top-right ────────────────────────────────────
     font_pill = _load(FONT_BOLD, 30)
-    draw.rounded_rectangle([1060, 22, 1258, 66], radius=8, fill=accent_rgb)
-    draw.text((1078, 31), "WATCH THIS", fill="white", font=font_pill)
+    pill_text = "WATCH THIS"
+    pad_x, pad_y = 18, 10
+    bb = draw.textbbox((0, 0), pill_text, font=font_pill)
+    text_w, text_h = bb[2] - bb[0], bb[3] - bb[1]
+    pill_right  = 1258
+    pill_left   = pill_right - (text_w + pad_x * 2)
+    pill_top    = 22
+    pill_bottom = pill_top + (text_h + pad_y * 2)
+    draw.rounded_rectangle([pill_left, pill_top, pill_right, pill_bottom],
+                           radius=8, fill=accent_rgb)
+    draw.text((pill_left + pad_x, pill_top + pad_y - bb[1]), pill_text,
+              fill="white", font=font_pill)
 
     bg.save(output_path, "JPEG", quality=95)
     log.info(f"Thumbnail saved → {output_path}")

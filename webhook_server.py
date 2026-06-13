@@ -49,7 +49,7 @@ class PipelineHandler(BaseHTTPRequestHandler):
 
             def task():
                 already = get_reviewed_tools()
-                topics  = discover_topics(n_topics=n, already_reviewed=already)
+                topics  = discover_topics(n_topics=n, already_done=already)
                 run_batch(topics)
 
             threading.Thread(target=task, daemon=True).start()
@@ -57,11 +57,17 @@ class PipelineHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/run/tool":
             name     = body.get("name")
-            category = body.get("category", "Tech")
+            category = body.get("category", "general")
             if not name:
                 self._send(400, {"error": "Missing 'name' field"})
                 return
-            topic = {"name": name, "category": category}
+            topic = {
+                "title":       name,
+                "topic_type":  category,
+                "hook":        "",
+                "setting":     "",
+                "music_style": "orchestral_documentary",
+            }
             threading.Thread(target=run_single, args=(topic,), daemon=True).start()
             self._send(202, {"status": "started", "tool": name})
 

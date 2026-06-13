@@ -12,6 +12,7 @@ from io import BytesIO
 from PIL import Image
 from google import genai
 from google.genai import types
+import config as cfg
 from config import (
     GEMINI_API_KEY, IMAGE_WIDTH, IMAGE_HEIGHT, GEMINI_IMAGE_MODEL,
     PEXELS_API_KEY, PEXELS_SEARCH_URL,
@@ -80,6 +81,12 @@ def _gemini_image_bytes(prompt: str, seed: int) -> bytes | None:
                 return part.inline_data.data
         log.warning("  Gemini response contained no image data")
     except Exception as exc:
+        msg = str(exc)
+        if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+            if not cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED:
+                log.warning("  Gemini image quota exhausted — switching to "
+                             "Pexels for the rest of this run.")
+            cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED = True
         log.warning(f"  Gemini image generation unavailable: {exc}")
     return None
 
@@ -152,15 +159,18 @@ def generate_scene_image(
     source = None
 
     # ── 1. Try Gemini image generation (free tier if available) ───────────
-    for attempt in range(1, retries + 1):
-        log.info(f"  Generating image via Gemini (attempt {attempt}): {prompt[:60]}...")
-        image_bytes = _gemini_image_bytes(full_prompt, seed)
-        if image_bytes:
-            source = "gemini"
-            break
-        if attempt < retries:
-            time.sleep(5)
-            seed = random.randint(1, 999999)
+    if not cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED:
+        for attempt in range(1, retries + 1):
+            log.info(f"  Generating image via Gemini (attempt {attempt}): {prompt[:60]}...")
+            image_bytes = _gemini_image_bytes(full_prompt, seed)
+            if image_bytes:
+                source = "gemini"
+                break
+            if cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED:
+                break  # no point retrying — quota is exhausted for this run
+            if attempt < retries:
+                time.sleep(5)
+                seed = random.randint(1, 999999)
 
     # ── 2. Fall back to a Pexels stock photo search ────────────────────────
     if not image_bytes:

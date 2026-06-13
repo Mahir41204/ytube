@@ -3,7 +3,7 @@ script_writer.py — Writes immersive second-person scenario scripts.
 The viewer is always "You". Never "Roman soldiers usually..." — always "You wake up..."
 
 Output includes the full narration split into timed scenes,
-each with a cinematic image prompt for Pollinations.ai.
+each with a cinematic image prompt for image generation.
 """
 import json, logging
 from google import genai
@@ -28,7 +28,7 @@ Respond ONLY with valid JSON — no markdown, no extra text:
   "scenes": [
     {
       "narration": "Exact portion of voiceover_script for this scene.",
-      "image_prompt": "Detailed Pollinations.ai image prompt (see rules below)",
+      "image_prompt": "Detailed cinematic image-generation prompt (see rules below)",
       "animation": "slow_zoom_in",
       "camera": "first_person"
     }
