@@ -1,14 +1,17 @@
 """
 thumbnail.py — Creates dramatic "YOU + DANGER + QUESTION" thumbnails.
 Style: dark cinematic background + bold title + danger element + dramatic text.
-Background image generated via Google Gemini (gemini-2.5-flash-image).
+Background image: Google Gemini (gemini-2.5-flash-image) if available,
+falling back to a Pexels stock photo search, then a solid dark background.
 """
-import os, logging, random
+import os, logging, random, re, requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from google import genai
 from google.genai import types
-from config import GEMINI_API_KEY, GEMINI_IMAGE_MODEL
+from config import (
+    GEMINI_API_KEY, GEMINI_IMAGE_MODEL, PEXELS_API_KEY, PEXELS_SEARCH_URL,
+)
 
 log = logging.getLogger(__name__)
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -50,14 +53,15 @@ def create_thumbnail(
     accent = CATEGORY_COLORS.get(topic_type, "#c0392b")
     accent_rgb = _hex_rgb(accent)
 
-    # ── Background image via Gemini ────────────────────────────────────────
+    # ── Background image: Gemini, then Pexels, then solid color ───────────
     bg_prompt = (
         f"dramatic cinematic thumbnail background, {title}, "
         f"{thumbnail_danger or 'epic dramatic scene'}, "
         "dark moody lighting, no text, widescreen, semi realistic digital painting, "
         "high contrast, cinematic atmosphere, 16:9"
     )
-    bg = None
+
+    image_bytes = None
     try:
         response = client.models.generate_content(
             model=GEMINI_IMAGE_MODEL,
@@ -68,20 +72,41 @@ def create_thumbnail(
                 seed=random.randint(1, 99999),
             ),
         )
-        image_bytes = None
         for part in response.candidates[0].content.parts:
             if getattr(part, "inline_data", None) is not None:
                 image_bytes = part.inline_data.data
                 break
         if image_bytes is None:
-            raise ValueError("Response did not contain image data")
+            log.warning("Gemini thumbnail response contained no image data")
+    except Exception as e:
+        log.warning(f"Gemini thumbnail background unavailable: {e}")
 
+    if image_bytes is None and PEXELS_API_KEY:
+        try:
+            words = re.findall(r"[A-Za-z]+", f"{title} {thumbnail_danger}".lower())
+            query = " ".join(words[:6]) or topic_type.replace("_", " ")
+            log.info(f"Falling back to Pexels for thumbnail background: '{query}'")
+            headers = {"Authorization": PEXELS_API_KEY}
+            params = {"query": query, "orientation": "landscape", "per_page": 8}
+            resp = requests.get(PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            photos = resp.json().get("photos", [])
+            if photos:
+                photo = random.choice(photos)
+                img_url = photo["src"].get("original") or photo["src"]["large2x"]
+                img_resp = requests.get(img_url, timeout=60)
+                img_resp.raise_for_status()
+                image_bytes = img_resp.content
+        except Exception as e:
+            log.warning(f"Pexels thumbnail background search failed: {e}")
+
+    if image_bytes is not None:
         bg = Image.open(BytesIO(image_bytes)).convert("RGB").resize((1280, 720))
         # Darken it so text stands out
         overlay = Image.new("RGB", (1280, 720), (0, 0, 0))
         bg = Image.blend(bg, overlay, 0.45)
-    except Exception as e:
-        log.warning(f"Thumbnail background generation failed: {e} — using solid bg")
+    else:
+        log.warning("No background image available — using solid bg")
         bg = Image.new("RGB", (1280, 720), (12, 12, 25))
 
     draw = ImageDraw.Draw(bg)

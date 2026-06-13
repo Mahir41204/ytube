@@ -12,10 +12,16 @@ GTTS_LANGUAGE   = "en"
 GTTS_TLD        = os.getenv("GTTS_TLD", "com")   # com=US | co.uk=British
 
 # ── Google Gemini image generation ─────────────────────────────────────────
-# Uses the same GEMINI_API_KEY as the script writer.
+# Uses the same GEMINI_API_KEY as the script writer. If this account has no
+# image-generation credits/quota, visuals.py and thumbnail.py automatically
+# fall back to searching Pexels for a stock photo instead.
 GEMINI_IMAGE_MODEL  = "gemini-2.5-flash-image"
 IMAGE_WIDTH         = 1920
 IMAGE_HEIGHT        = 1080
+
+# ── Pexels stock photo search (free fallback for images) ───────────────────
+PEXELS_API_KEY      = os.getenv("PEXELS_API_KEY", "")
+PEXELS_SEARCH_URL   = "https://api.pexels.com/v1/search"
 
 # ── Video settings ─────────────────────────────────────────────────────────
 VIDEO_FPS           = 30
