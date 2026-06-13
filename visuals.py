@@ -42,12 +42,15 @@ def generate_scene_image(
     seed = seed or random.randint(1, 999999)
 
     params = {
-        "width":  IMAGE_WIDTH,
+        "width": IMAGE_WIDTH,
         "height": IMAGE_HEIGHT,
-        "model":  IMAGE_MODEL,
         "nologo": "true",
-        "seed":   seed,
+        "seed": seed,
     }
+
+    if IMAGE_MODEL:
+        params["model"] = IMAGE_MODEL
+    
     url = f"{POLLINATIONS_URL}/{quote(full_prompt)}"
 
     for attempt in range(1, retries + 1):

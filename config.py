@@ -15,7 +15,8 @@ GTTS_TLD        = os.getenv("GTTS_TLD", "com")   # com=US | co.uk=British
 POLLINATIONS_URL    = "https://image.pollinations.ai/prompt"
 IMAGE_WIDTH         = 1920
 IMAGE_HEIGHT        = 1080
-IMAGE_MODEL         = "flux"          # best quality free model
+# IMAGE_MODEL         = "flux"          # best quality free model
+IMAGE_MODEL         = ""
 
 # ── Video settings ─────────────────────────────────────────────────────────
 VIDEO_FPS           = 30
