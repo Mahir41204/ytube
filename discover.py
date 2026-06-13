@@ -95,8 +95,13 @@ def discover_topics(n_topics: int = 3, already_done=None) -> list:
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM,
             temperature=0.95,   # higher creativity for topic variety
-            max_output_tokens=1024,
+            max_output_tokens=4096,
             response_mime_type="application/json",
+            # gemini-2.5-flash spends part of max_output_tokens on
+            # "thinking" by default, which was truncating the JSON
+            # array mid-object. Disable it so the full budget goes
+            # to the actual response.
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
     raw = response.text.strip()
@@ -105,7 +110,7 @@ def discover_topics(n_topics: int = 3, already_done=None) -> list:
     print(raw)
     print("=== GEMINI RESPONSE END ===")
 
-    match = re.search(r"\[[\s\S]*?\]", raw)
+    match = re.search(r"\[[\s\S]*\]", raw)
     if not match:
         raise RuntimeError(f"No JSON array found in Gemini response:\n{raw}")
 
