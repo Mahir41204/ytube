@@ -1,12 +1,17 @@
 """
-visuals.py — Generates cinematic scene images using Pollinations.ai.
-Completely free, no API key required. Uses the Flux model.
+visuals.py — Generates cinematic scene images using Google Gemini
+(gemini-2.5-flash-image, aka "Nano Banana"). Uses the same GEMINI_API_KEY
+as script_writer.py.
 """
-import os, time, logging, random, requests
-from urllib.parse import quote
-from config import POLLINATIONS_URL, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_MODEL
+import os, time, logging, random
+from io import BytesIO
+from PIL import Image
+from google import genai
+from google.genai import types
+from config import GEMINI_API_KEY, IMAGE_WIDTH, IMAGE_HEIGHT, GEMINI_IMAGE_MODEL
 
 log = logging.getLogger(__name__)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Appended to every prompt for consistent cinematic style
 STYLE_SUFFIX = (
@@ -19,6 +24,29 @@ STYLE_SUFFIX = (
 NEGATIVE_HINT = "no anime, no cartoon, no pixar, no comic book, no modern elements"
 
 
+def _fit_to_canvas(img: Image.Image, width: int, height: int) -> Image.Image:
+    """Resize/crop an image to exactly width x height, preserving aspect ratio
+    (center-crop any overflow)."""
+    img = img.convert("RGB")
+    src_ratio = img.width / img.height
+    dst_ratio = width / height
+
+    if src_ratio > dst_ratio:
+        # Source is wider than target — match height, crop width
+        new_height = height
+        new_width = int(round(new_height * src_ratio))
+    else:
+        # Source is taller than target — match width, crop height
+        new_width = width
+        new_height = int(round(new_width / src_ratio))
+
+    img = img.resize((new_width, new_height), Image.LANCZOS)
+
+    left = (new_width - width) // 2
+    top = (new_height - height) // 2
+    return img.crop((left, top, left + width, top + height))
+
+
 def generate_scene_image(
     prompt: str,
     output_path: str,
@@ -26,7 +54,7 @@ def generate_scene_image(
     retries: int = 3,
 ) -> str:
     """
-    Generate a single 1920×1080 image for a scene via Pollinations.ai.
+    Generate a single 1920×1080 image for a scene via Google Gemini.
 
     Args:
         prompt:       Scene description (image_prompt from script).
@@ -38,36 +66,36 @@ def generate_scene_image(
         output_path on success.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    full_prompt = f"{prompt}, {STYLE_SUFFIX}"
+    full_prompt = f"{prompt}, {STYLE_SUFFIX}. Avoid: {NEGATIVE_HINT}."
     seed = seed or random.randint(1, 999999)
-
-    params = {
-        "width": IMAGE_WIDTH,
-        "height": IMAGE_HEIGHT,
-        "nologo": "true",
-        "seed": seed,
-    }
-
-    if IMAGE_MODEL:
-        params["model"] = IMAGE_MODEL
-    
-    url = f"{POLLINATIONS_URL}/{quote(full_prompt)}"
 
     for attempt in range(1, retries + 1):
         try:
             log.info(f"  Generating image (attempt {attempt}): {prompt[:60]}...")
-            resp = requests.get(url, params=params, timeout=120)
-            resp.raise_for_status()
+            response = client.models.generate_content(
+                model=GEMINI_IMAGE_MODEL,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["Text", "Image"],
+                    image_config=types.ImageConfig(aspect_ratio="16:9"),
+                    seed=seed,
+                ),
+            )
 
-            # Verify it's actually an image
-            if not resp.content[:4] in (b'\xff\xd8\xff\xe0', b'\xff\xd8\xff\xe1',
-                                         b'\x89PNG', b'GIF8'):
-                # Pollinations sometimes returns an error page — retry
-                raise ValueError("Response is not a valid image")
+            image_bytes = None
+            for part in response.candidates[0].content.parts:
+                if getattr(part, "inline_data", None) is not None:
+                    image_bytes = part.inline_data.data
+                    break
 
-            with open(output_path, "wb") as f:
-                f.write(resp.content)
-            log.info(f"  Image saved: {output_path} ({len(resp.content)//1024} KB)")
+            if image_bytes is None:
+                raise ValueError("Response did not contain image data")
+
+            img = Image.open(BytesIO(image_bytes))
+            img = _fit_to_canvas(img, IMAGE_WIDTH, IMAGE_HEIGHT)
+            img.save(output_path, "JPEG", quality=92)
+
+            log.info(f"  Image saved: {output_path} ({os.path.getsize(output_path)//1024} KB)")
             return output_path
 
         except Exception as exc:
@@ -109,7 +137,7 @@ def generate_scene_images(scenes: list, output_dir: str) -> list:
             output_path=out_path,
             seed=base_seed + i,
         )
-        # Small delay to be respectful to the free API
+        # Small delay to avoid hammering the API
         time.sleep(2)
 
     return scenes

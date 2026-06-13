@@ -1,13 +1,17 @@
 """
 thumbnail.py — Creates dramatic "YOU + DANGER + QUESTION" thumbnails.
 Style: dark cinematic background + bold title + danger element + dramatic text.
+Background image generated via Google Gemini (gemini-2.5-flash-image).
 """
-import os, logging, requests, random
-from urllib.parse import quote
+import os, logging, random
+from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from config import POLLINATIONS_URL, IMAGE_MODEL
+from google import genai
+from google.genai import types
+from config import GEMINI_API_KEY, GEMINI_IMAGE_MODEL
 
 log = logging.getLogger(__name__)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 FONT_BOLD   = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_NORMAL = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -46,7 +50,7 @@ def create_thumbnail(
     accent = CATEGORY_COLORS.get(topic_type, "#c0392b")
     accent_rgb = _hex_rgb(accent)
 
-    # ── Background image via Pollinations ─────────────────────────────────
+    # ── Background image via Gemini ────────────────────────────────────────
     bg_prompt = (
         f"dramatic cinematic thumbnail background, {title}, "
         f"{thumbnail_danger or 'epic dramatic scene'}, "
@@ -55,13 +59,24 @@ def create_thumbnail(
     )
     bg = None
     try:
-        url = f"{POLLINATIONS_URL}/{quote(bg_prompt)}"
-        resp = requests.get(url, params={"width":1280,"height":720,"model":IMAGE_MODEL,
-                                          "nologo":"true","seed":random.randint(1,99999)},
-                            timeout=90)
-        resp.raise_for_status()
-        from io import BytesIO
-        bg = Image.open(BytesIO(resp.content)).convert("RGB").resize((1280, 720))
+        response = client.models.generate_content(
+            model=GEMINI_IMAGE_MODEL,
+            contents=bg_prompt,
+            config=types.GenerateContentConfig(
+                response_modalities=["Text", "Image"],
+                image_config=types.ImageConfig(aspect_ratio="16:9"),
+                seed=random.randint(1, 99999),
+            ),
+        )
+        image_bytes = None
+        for part in response.candidates[0].content.parts:
+            if getattr(part, "inline_data", None) is not None:
+                image_bytes = part.inline_data.data
+                break
+        if image_bytes is None:
+            raise ValueError("Response did not contain image data")
+
+        bg = Image.open(BytesIO(image_bytes)).convert("RGB").resize((1280, 720))
         # Darken it so text stands out
         overlay = Image.new("RGB", (1280, 720), (0, 0, 0))
         bg = Image.blend(bg, overlay, 0.45)

@@ -11,12 +11,11 @@ GEMINI_MODEL    = "gemini-2.5-flash"
 GTTS_LANGUAGE   = "en"
 GTTS_TLD        = os.getenv("GTTS_TLD", "com")   # com=US | co.uk=British
 
-# ── Pollinations.ai image generation (free, no key) ───────────────────────
-POLLINATIONS_URL    = "https://image.pollinations.ai/prompt"
+# ── Google Gemini image generation ─────────────────────────────────────────
+# Uses the same GEMINI_API_KEY as the script writer.
+GEMINI_IMAGE_MODEL  = "gemini-2.5-flash-image"
 IMAGE_WIDTH         = 1920
 IMAGE_HEIGHT        = 1080
-# IMAGE_MODEL         = "flux"          # best quality free model
-IMAGE_MODEL         = ""
 
 # ── Video settings ─────────────────────────────────────────────────────────
 VIDEO_FPS           = 30
