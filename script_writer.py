@@ -87,22 +87,41 @@ def generate_script(topic: dict) -> dict:
     )
 
     log.info(f"Writing immersive script for '{topic['title']}'...")
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM,
-            temperature=0.85,
-            max_output_tokens=8192,
-        ),
-    )
 
-    raw = response.text.strip()
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"): raw = raw[4:]
+    last_error = None
+    for attempt in range(1, 3):
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM,
+                temperature=0.85,
+                max_output_tokens=16384,
+                response_mime_type="application/json",
+                # gemini-2.5-flash spends part of max_output_tokens on
+                # "thinking" by default, which can truncate the JSON
+                # output. Disable it so the full budget goes to the script.
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
 
-    data = json.loads(raw.strip())
+        raw = (response.text or "").strip()
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+
+        try:
+            data = json.loads(raw)
+            break
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            log.warning(f"  Attempt {attempt}: model returned invalid JSON ({exc}). "
+                        f"Retrying..." if attempt == 1 else "Giving up.")
+    else:
+        raise ValueError(f"Model did not return valid JSON after retries: {last_error}")
+
     data["yt_tags"] = data.get("yt_tags", [])[:15]
     data["topic_type"] = topic.get("topic_type", "general")
     data["music_style"] = topic.get("music_style", "orchestral_documentary")
