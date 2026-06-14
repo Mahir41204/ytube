@@ -4,17 +4,13 @@ assembler.py — Assembles the final immersive scenario video.
 Pipeline:
   1. Calculate per-scene duration from word count
   2. Apply Ken Burns animation to each image (zoom / pan)
-  3. Add subtitle overlay (scene narration at bottom)
-  4. Crossfade between scenes
-  5. Mux voiceover + optional background music
+  3. Crossfade between scenes
+  4. Mux voiceover + optional background music
 """
-import os, json, math, random, logging, subprocess, textwrap
+import os, json, math, random, logging, subprocess
 from config import VIDEO_FPS, SCENE_MIN_DURATION, SPEAKING_WPM, TRANSITION_DURATION, MUSIC_VOLUME
 
 log = logging.getLogger(__name__)
-
-FONT      = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -32,18 +28,6 @@ def _duration(path):
 
 def _words(text):
     return len(text.split())
-
-def _escape(t):
-    return (t.replace("\\","\\\\")
-             .replace("'", "\u2019")
-             .replace(":", "\\:")
-             .replace("%","\\%")
-             .replace("[","\\[").replace("]","\\]"))
-
-def _wrap(text, width=60):
-    """Word-wrap text for subtitle display."""
-    lines = textwrap.wrap(text, width=width)
-    return "\\n".join(_escape(l) for l in lines[:3])  # max 3 lines
 
 
 # ── Ken Burns animations ───────────────────────────────────────────────────
@@ -70,34 +54,17 @@ def _ken_burns_filter(animation: str, duration: float, w=1920, h=1080) -> str:
 ANIMATIONS = ["slow_zoom_in", "slow_zoom_out", "pan_right", "pan_left"]
 
 def _build_scene_clip(scene: dict, workdir: str, idx: int) -> str:
-    """Render one image → Ken Burns animated clip with subtitle."""
+    """Render one image → Ken Burns animated clip."""
     img       = scene["image_path"]
     duration  = scene["duration"]
     anim      = scene.get("animation", random.choice(ANIMATIONS))
-    narration = scene.get("narration", "")
     out       = os.path.join(workdir, f"scene_{idx:03d}.mp4")
 
     kb_filter = _ken_burns_filter(anim, duration)
-    sub_text  = _wrap(narration, width=55)
-
-    # Fade in/out alpha for subtitle
-    fade_in  = 0.3
-    fade_out = max(0, duration - 0.4)
-
-    subtitle_filter = (
-        # Dark bar behind text
-        f"drawbox=x=0:y=ih-160:w=iw:h=160:color=black@0.55:t=fill,"
-        # Subtitle text
-        f"drawtext=text='{sub_text}':"
-        f"fontfile={FONT}:fontsize=38:fontcolor=white:"
-        f"x=(w-text_w)/2:y=h-130:"
-        f"alpha='if(lt(t,{fade_in}),t/{fade_in},"
-              f"if(gt(t,{fade_out}),({duration}-t)/{(duration-fade_out) or 0.1},1))'"
-    )
 
     fade_filter = f"fade=t=in:st=0:d={min(0.4,duration*0.1)},fade=t=out:st={duration-0.35}:d=0.35"
 
-    full_vf = f"{kb_filter},{subtitle_filter},{fade_filter},format=yuv420p"
+    full_vf = f"{kb_filter},{fade_filter},format=yuv420p"
 
     _run([
         "ffmpeg", "-y",

@@ -7,24 +7,30 @@ load_dotenv()
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL    = "gemini-2.5-flash"
 
-# ── gTTS voiceover ─────────────────────────────────────────────────────────
-GTTS_LANGUAGE   = "en"
-GTTS_TLD        = os.getenv("GTTS_TLD", "com")   # com=US | co.uk=British
+# ── Gemini TTS voiceover ───────────────────────────────────────────────────
+# Uses the same GEMINI_API_KEY as the script writer.
+# Model: gemini-2.5-flash-preview-tts (fast, high-quality, natural pacing)
+GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+# Voice options: Charon (Informative) | Fenrir (Excitable) | Orus (Firm)
+# | Algieba (Smooth) | Gacrux (Mature) | Sulafat (Warm)
+GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Charon")
 
-# ── Google Gemini image generation ─────────────────────────────────────────
-# Uses the same GEMINI_API_KEY as the script writer. If this account has no
-# image-generation credits/quota, visuals.py and thumbnail.py automatically
-# fall back to searching Pexels for a stock photo instead.
-GEMINI_IMAGE_MODEL  = "gemini-2.5-flash-image"
-IMAGE_WIDTH         = 1920
-IMAGE_HEIGHT        = 1080
+# Gemini TTS speaks at roughly 150 wpm in documentary-narrator mode.
+# The assembler uses this to calculate per-scene image durations.
+SPEAKING_WPM        = 150
 
-# Shared mutable flag: set to True by visuals.py/thumbnail.py the first time
-# Gemini image generation returns a quota/billing error (HTTP 429
-# RESOURCE_EXHAUSTED). Once set, all subsequent image requests in this run
-# skip straight to the Pexels fallback instead of wasting time/requests
-# retrying a call that is guaranteed to fail again.
-GEMINI_IMAGE_QUOTA_EXHAUSTED = False
+# ── Hugging Face — FLUX.1-schnell image generation (free) ─────────────────
+# Get a free token at https://huggingface.co/settings/tokens (read access only)
+# Free tier: ~few hundred requests/hour — plenty for this pipeline.
+HF_TOKEN          = os.getenv("HF_TOKEN", "")
+HF_IMAGE_MODEL    = "black-forest-labs/FLUX.1-schnell"
+HF_IMAGE_API_URL  = f"https://api-inference.huggingface.co/models/{HF_IMAGE_MODEL}"
+IMAGE_WIDTH       = 1920
+IMAGE_HEIGHT      = 1080
+# Native generation size (HF inference); upscaled to IMAGE_WIDTH x IMAGE_HEIGHT
+# using LANCZOS. 16:9 native keeps quality high without asking for 1920x1080.
+HF_GEN_WIDTH      = 1024
+HF_GEN_HEIGHT     = 576
 
 # ── Pexels stock photo search (free fallback for images) ───────────────────
 PEXELS_API_KEY      = os.getenv("PEXELS_API_KEY", "")
@@ -32,8 +38,7 @@ PEXELS_SEARCH_URL   = "https://api.pexels.com/v1/search"
 
 # ── Video settings ─────────────────────────────────────────────────────────
 VIDEO_FPS           = 30
-SCENE_MIN_DURATION  = 3.5             # seconds per image minimum
-SPEAKING_WPM        = 130             # words per minute for timing estimation
+SCENE_MIN_DURATION  = 4.0             # seconds per image minimum
 TRANSITION_DURATION = 0.4             # crossfade between scenes (seconds)
 
 # ── Music ─────────────────────────────────────────────────────────────────
@@ -80,3 +85,9 @@ def validate():
     }.items() if not v]
     if missing:
         raise EnvironmentError(f"Missing env vars: {', '.join(missing)}")
+    if not HF_TOKEN:
+        import logging
+        logging.getLogger(__name__).warning(
+            "HF_TOKEN not set — image generation will fall back to Pexels only. "
+            "Get a free token at https://huggingface.co/settings/tokens"
+        )

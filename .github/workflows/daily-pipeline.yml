@@ -39,6 +39,7 @@ jobs:
       - name: Run pipeline
         env:
           GEMINI_API_KEY:          ${{ secrets.GEMINI_API_KEY }}
+          HF_TOKEN:                ${{ secrets.HF_TOKEN }}
           PEXELS_API_KEY:          ${{ secrets.PEXELS_API_KEY }}
           YOUTUBE_CLIENT_ID:       ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET:   ${{ secrets.YOUTUBE_CLIENT_SECRET }}
@@ -54,6 +55,15 @@ jobs:
             echo "▶ Auto-discovering and producing $N videos..."
             python pipeline.py --n "$N"
           fi
+
+      - name: Upload videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: videos-${{ github.run_number }}
+          path: outputs/
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload log
         if: always()

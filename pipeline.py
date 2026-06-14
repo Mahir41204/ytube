@@ -88,6 +88,19 @@ def run_single(topic: dict, record_id: str = None):
                 music_path=music_path,
             )
 
+            # ── Save a persistent copy before the temp dir is cleaned up ──
+            import shutil, re as _re
+            _safe = _re.sub(r"[^\w\s-]", "", script["yt_title"])[:60].strip().replace(" ", "_")
+            _ts   = time.strftime("%Y%m%d_%H%M")
+            outputs_dir  = os.path.join(os.path.dirname(__file__), "outputs")
+            os.makedirs(outputs_dir, exist_ok=True)
+            saved_video = os.path.join(outputs_dir, f"{_ts}_{_safe}.mp4")
+            saved_thumb = os.path.join(outputs_dir, f"{_ts}_{_safe}_thumb.jpg")
+            shutil.copy2(video_path, saved_video)
+            shutil.copy2(thumb_path, saved_thumb)
+            log.info(f"💾  Video saved → {saved_video}")
+            log.info(f"💾  Thumb saved → {saved_thumb}")
+
             # 7. Upload ────────────────────────────────────────────────────
             log.info("[7/7] Uploading to YouTube...")
             update_status(record_id, "Uploading")

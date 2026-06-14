@@ -1,21 +1,19 @@
 """
 thumbnail.py — Creates dramatic "YOU + DANGER + QUESTION" thumbnails.
 Style: dark cinematic background + bold title + danger element + dramatic text.
-Background image: Google Gemini (gemini-2.5-flash-image) if available,
-falling back to a Pexels stock photo search, then a solid dark background.
+Background image: FLUX.1-schnell via HF Inference API, falling back to
+Pexels stock photo search, then a solid dark background.
 """
 import os, logging, random, re, requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from google import genai
-from google.genai import types
-import config as cfg
 from config import (
-    GEMINI_API_KEY, GEMINI_IMAGE_MODEL, PEXELS_API_KEY, PEXELS_SEARCH_URL,
+    HF_TOKEN, HF_IMAGE_API_URL, HF_GEN_WIDTH, HF_GEN_HEIGHT,
+    PEXELS_API_KEY, PEXELS_SEARCH_URL,
 )
+from visuals import _hf_flux_image_bytes, _pexels_image_bytes, _simplify_query
 
 log = logging.getLogger(__name__)
-client = genai.Client(api_key=GEMINI_API_KEY)
 
 FONT_BOLD   = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_NORMAL = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -54,58 +52,20 @@ def create_thumbnail(
     accent = CATEGORY_COLORS.get(topic_type, "#c0392b")
     accent_rgb = _hex_rgb(accent)
 
-    # ── Background image: Gemini, then Pexels, then solid color ───────────
+    # ── Background: FLUX.1-schnell → Pexels → solid dark ──────────────────
     bg_prompt = (
         f"dramatic cinematic thumbnail background, {title}, "
         f"{thumbnail_danger or 'epic dramatic scene'}, "
-        "dark moody lighting, no text, widescreen, semi realistic digital painting, "
-        "high contrast, cinematic atmosphere, 16:9"
+        "dark moody lighting, no text, no watermark, widescreen, "
+        "cinematic digital painting, high contrast, dramatic atmosphere"
     )
 
-    image_bytes = None
-    if not cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED:
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_IMAGE_MODEL,
-                contents=bg_prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["Text", "Image"],
-                    image_config=types.ImageConfig(aspect_ratio="16:9"),
-                    seed=random.randint(1, 99999),
-                ),
-            )
-            for part in response.candidates[0].content.parts:
-                if getattr(part, "inline_data", None) is not None:
-                    image_bytes = part.inline_data.data
-                    break
-            if image_bytes is None:
-                log.warning("Gemini thumbnail response contained no image data")
-        except Exception as e:
-            msg = str(e)
-            if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
-                cfg.GEMINI_IMAGE_QUOTA_EXHAUSTED = True
-            log.warning(f"Gemini thumbnail background unavailable: {e}")
-    else:
-        log.info("Gemini image quota already exhausted — using Pexels for thumbnail background")
+    image_bytes = _hf_flux_image_bytes(bg_prompt, seed=random.randint(1, 99999), retries=3)
 
-    if image_bytes is None and PEXELS_API_KEY:
-        try:
-            words = re.findall(r"[A-Za-z]+", f"{title} {thumbnail_danger}".lower())
-            query = " ".join(words[:6]) or topic_type.replace("_", " ")
-            log.info(f"Falling back to Pexels for thumbnail background: '{query}'")
-            headers = {"Authorization": PEXELS_API_KEY}
-            params = {"query": query, "orientation": "landscape", "per_page": 8}
-            resp = requests.get(PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30)
-            resp.raise_for_status()
-            photos = resp.json().get("photos", [])
-            if photos:
-                photo = random.choice(photos)
-                img_url = photo["src"].get("original") or photo["src"]["large2x"]
-                img_resp = requests.get(img_url, timeout=60)
-                img_resp.raise_for_status()
-                image_bytes = img_resp.content
-        except Exception as e:
-            log.warning(f"Pexels thumbnail background search failed: {e}")
+    if image_bytes is None:
+        query = _simplify_query(f"{title} {thumbnail_danger}")
+        log.info(f"FLUX unavailable — trying Pexels for thumbnail: '{query}'")
+        image_bytes = _pexels_image_bytes(query, seed=random.randint(0, 7))
 
     if image_bytes is not None:
         bg = Image.open(BytesIO(image_bytes)).convert("RGB").resize((1280, 720))
